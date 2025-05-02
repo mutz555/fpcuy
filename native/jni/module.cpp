@@ -99,11 +99,14 @@ static void hook_java_methods(JNIEnv *env) {
                 
                 // Buat JNI method yang selalu return true
                 static const char* capturedClassName = className; // Simpan nama kelas di variabel lokal untuk lambda
+                // Definisi fungsi hook yang benar untuk menghindari error casting
+                static jboolean hook_isHardwareDetected() {
+                    LOGI("[HookReplacement] %s.isHardwareDetected dipanggil - mengembalikan TRUE", capturedClassName);
+                    return JNI_TRUE;
+                }
+                
                 static JNINativeMethod methods[] = {
-                    {"isHardwareDetected", "()Z", (void *) []() -> jboolean {
-                        LOGI("[HookReplacement] %s.isHardwareDetected dipanggil - mengembalikan TRUE", capturedClassName);
-                        return JNI_TRUE;
-                    }}
+                    {"isHardwareDetected", "()Z", (void *)hook_isHardwareDetected}
                 };
                 
                 // Register native method override
