@@ -1,0 +1,85 @@
+name: Build Zygisk Module
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r21e
+
+      - name: Build Native Libraries
+        run: |
+          cd native/jni
+          $ANDROID_NDK_HOME/ndk-build
+          cd ../..
+          mkdir -p zygisk
+          cp -r native/libs/arm64-v8a/libmodule.so zygisk/arm64-v8a.so
+          cp -r native/libs/armeabi-v7a/libmodule.so zygisk/armeabi-v7a.so
+
+      - name: Package Module
+        run: |
+          mkdir -p build/META-INF
+          cp -r META-INF/* build/META-INF/
+          mkdir -p build/zygisk
+          cp -r zygisk/* build/zygisk/
+          cp module.prop customize.sh uninstall.sh AndroidManifest.xml build/
+          mkdir -p dist
+          cd build
+          zip -r ../dist/fingerprint-bypass-mutz.zip META-INF module.prop customize.sh uninstall.sh AndroidManifest.xml zygisk
+          cd ..
+          echo "Module build completed"
+
+      - name: Upload Module Zip
+        uses: actions/upload-artifact@v3
+        with:
+          name: fingerprint-bypass-mutz
+          path: dist/fingerprint-bypass-mutz.zip
+          
+      - name: Upload Native Libraries
+        uses: actions/upload-artifact@v3
+        with:
+          name: native-libs
+          path: |
+            zygisk/arm64-v8a.so
+            zygisk/armeabi-v7a.so
+      
+      - name: Create Release
+        id: create_release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist/fingerprint-bypass-mutz.zip
+          asset_name: fingerprint-bypass-mutz.zip
+          asset_content_type: application/zip

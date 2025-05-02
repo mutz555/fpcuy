@@ -1,0 +1,147 @@
+#!/sbin/sh
+
+UMOD_TMPDIR=/dev/tmp
+rm -rf $UMOD_TMPDIR 2>/dev/null
+mkdir -p $UMOD_TMPDIR
+
+unzip -o "$3" 'module.prop' -d $UMOD_TMPDIR >&2
+[ ! -f $UMOD_TMPDIR/module.prop ] && abort "! Unable to extract zip file!"
+
+ZIPFILE=$3
+getprop() { grep "$1=" "$UMOD_TMPDIR/system.prop" 2>/dev/null | head -n1 | cut -d= -f2-; }
+
+load_release_notes() {
+  [ -z $RELNOTESURL ] && return
+  [ "$FUNCTION" = "mount_partitions" ] && return
+  [ "$FUNCTION" = "umount_partitions" ] && return
+  [ "$(find /data -name "settings_global.xml")" ] || return
+  [ ! -f /sdcard/ModUpdate.txt ] || [ ! "$(grep Mod\. /sdcard/ModUpdate.txt)" ] && return
+  MODID=$(grep_prop id $UMOD_TMPDIR/module.prop)
+  [ ! -f /data/adb/modules/$MODID/module.prop ] && return
+  [ "$(grep_prop version $UMOD_TMPDIR/module.prop)" = "$(grep_prop version /data/adb/modules/$MODID/module.prop)" ] && return
+  MODAUTH=$(grep_prop author $UMOD_TMPDIR/module.prop)
+  MODNAME=$(grep_prop name $UMOD_TMPDIR/module.prop)
+  MODVERS=$(grep_prop version $UMOD_TMPDIR/module.prop)
+  HOST=$(echo $RELNOTESURL | awk -F/ '{print $3}')
+  PAGE=$(echo $RELNOTESURL | cut -d/ -f4-)
+  DOM="$(curl -s -H "Host: $HOST" -H "User-Agent: Mozilla/5.0 (X11; U; Linux x86_64; en-US; rv:1.9.2.16) Gecko/20110323 Ubuntu/10.04 (lucid) Firefox/3.6.16" -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" -H "Accept-Language: en-US,en;q=0.5" -H "Accept-Charset: ISO-8859-1,utf-8;q=0.7,*;q=0.7" -H "Keep-Alive: 300" -H "Connection: keep-alive" -H "Referer: https://google.com" "http://$HOST/$PAGE")"
+  MODLOG=$(echo "$DOM" | grep -o '<div class="content">.*' | cut -d\> -f2- | sed -n '/.*<\/div>/,/<\/div>/{s/<[^>]*>//g;p}')
+  echo "Mod. Release Notes for $MODNAME $MODVERS by $MODAUTH
+
+$MODLOG" > /sdcard/ModUpdate.txt
+}
+
+ZIPFILE="$3"
+ABSZIP="$(readlink -f "$ZIPFILE")"
+outfd=/proc/self/fd/$2
+ui_print() { echo -e "$1" > $outfd; }
+
+require_new_magisk() {
+  ui_print "*******************************"
+  ui_print " Please install Magisk v24.0+! "
+  ui_print "*******************************"
+  exit 1
+}
+
+# Mount partitions
+mount_partitions() {
+  [ ! -z $UMOD_KSU ] && KSU=true || KSU=false
+  # Check A/B slot
+  SLOT=`grep_cmdline androidboot.slot_suffix`
+  if [ -z $SLOT ]; then
+    SLOT=`grep_cmdline androidboot.slot`
+    [ -z $SLOT ] || { [ "$SLOT" = _a ] && SLOT=a || SLOT=b; }
+  fi
+  [ -z $SLOT ] && SLOT=_a
+  # Check legacy system mount point
+  SYSTEM_ROOT=
+  cat /proc/mounts | grep -E '/system[^a-zA-Z]' | grep -qv 'tmpfs' && SYSTEM_ROOT=true
+  if [ $SYSTEM_ROOT ]; then
+    mkdir -p /system_root 2>/dev/null
+    ui_print "- Device using system_root_image"
+    mount -o rw,bind /system_root /system
+  fi
+  # Check if sepolicy is enforcing
+  [ "$(getenforce)" = "Enforcing" ] && SEPOLICY_ENFORCING=true || SEPOLICY_ENFORCING=false
+  [ -z $SEPOLICY_ENFORCING ] && SEPOLICY_ENFORCING=false
+  # Additional edge case handling
+  [ -d /postinstall/tmp ] && POSTINSTALL=/postinstall
+}
+
+# Unmount partitions
+umount_partitions() {
+  [ $SYSTEM_ROOT ] && umount /system
+  umount -l /system_root 2>/dev/null
+  umount -l /system 2>/dev/null
+  umount -l /vendor 2>/dev/null
+  umount -l /persist 2>/dev/null
+}
+
+# Detect whether in boot mode
+[ -z $BOOTMODE ] && ps | grep zygote | grep -qv grep && BOOTMODE=true
+[ -z $BOOTMODE ] && ps -A 2>/dev/null | grep zygote | grep -qv grep && BOOTMODE=true
+[ -z $BOOTMODE ] && BOOTMODE=false
+
+# Get Android SDK version
+API=`getprop ro.build.version.sdk`
+
+# Get device info
+BRAND=`getprop ro.product.brand`
+MANUFACTURER=`getprop ro.product.manufacturer`
+DEVICE=`getprop ro.product.device`
+MODEL=`getprop ro.product.model`
+ARCH=`getprop ro.product.cpu.abi`
+API=`getprop ro.build.version.sdk`
+
+# Check if Magisk is installed
+VMH=/data/adb/magisk/util_functions.sh
+if [ -f $VMH ]; then
+  . $VMH
+  if [ $MAGISK_VER_CODE -lt 24000 ]; then
+    require_new_magisk
+  fi
+else
+  if [ ! -d /data/adb/ksu ]; then
+    ui_print "********************************************"
+    ui_print " Please install Magisk or KernelSU first! "
+    ui_print "********************************************"
+    exit 1
+  fi
+  # KernelSU detected
+  UMOD_KSU=true
+  mkdir -p /data/adb/modules
+  mkdir -p $UMOD_TMPDIR/ksu
+  touch $UMOD_TMPDIR/ksu/update
+  [ ! -d /data/adb/modules_update ] && mkdir -p /data/adb/modules_update
+fi
+
+# Setup busybox and installation stuff
+test -f /data/adb/magisk/busybox && MAGISKBB=/data/adb/magisk/busybox || MAGISKBB=/data/adb/ksu/bin/busybox
+
+# Extract common files
+unzip -o "$ZIPFILE" module.prop install.sh uninstall.sh 'common/*' -d $UMOD_TMPDIR >&2
+
+# Extra sanity checks
+chmod 755 $UMOD_TMPDIR/install.sh
+chmod 755 $UMOD_TMPDIR/uninstall.sh
+
+# Prepare installation
+ui_print "- Preparing for Magisk/KernelSU installation"
+
+# Load install script
+. $UMOD_TMPDIR/install.sh
+
+# Custom uninstaller
+[ -f $UMOD_TMPDIR/uninstall.sh ] && cp -af $UMOD_TMPDIR/uninstall.sh $MODPATH/uninstall.sh
+
+# Load release notes
+load_release_notes
+
+# Finalize and clean up
+cd /
+rm -rf $UMOD_TMPDIR
+rm -rf /dev/tmp
+
+ui_print "- Done"
+ui_print " "
+exit 0

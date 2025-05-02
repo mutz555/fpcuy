@@ -1,0 +1,7 @@
+id=fingerprint_bypass_mutz
+name=Fingerprint Bypass by Mutz
+version=v1.0
+versionCode=1
+author=Mutz
+description=Zygisk module untuk memperbaiki fingerprint service pada Infinix Hot 40 Pro dengan HyperOS 2 Android 15
+zygisk=true
