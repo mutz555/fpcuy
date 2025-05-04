@@ -2,84 +2,84 @@ name: Build Zygisk Module
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ main, master ]
+  workflow_dispatch: # Untuk trigger manual dari UI GitHub
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Setup Java
+      - name: Set up JDK 11
         uses: actions/setup-java@v3
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '11'
 
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r21e
+      - name: Install required packages
+        run: sudo apt-get update && sudo apt-get install -y wget unzip build-essential cmake
 
-      - name: Build Native Libraries
+      - name: Download Android NDK
         run: |
-          cd native/jni
-          $ANDROID_NDK_HOME/ndk-build
-          cd ../..
-          mkdir -p zygisk
-          cp -r native/libs/arm64-v8a/libmodule.so zygisk/arm64-v8a.so
-          cp -r native/libs/armeabi-v7a/libmodule.so zygisk/armeabi-v7a.so
+          wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q android-ndk-r25c-linux.zip
+          echo "NDK_HOME=$PWD/android-ndk-r25c" >> $GITHUB_ENV
 
-      - name: Package Module
+      # We don't use Dobby anymore - simplified approach
+      # - name: Download and setup Dobby library
+      #  run: |
+      #    mkdir -p jni/dobby
+      #    git clone --depth=1 https://github.com/jmpews/Dobby.git jni/dobby
+      #    mkdir -p jni/dobby/build
+      #    cd jni/dobby/build
+      #    cmake .. -DCMAKE_BUILD_TYPE=Release -DDOBBY_BUILD_SHARED_LIBRARY=ON
+      #    make -j$(nproc)
+
+      - name: Build Zygisk module
         run: |
-          mkdir -p build/META-INF
-          cp -r META-INF/* build/META-INF/
-          mkdir -p build/zygisk
-          cp -r zygisk/* build/zygisk/
-          cp module.prop customize.sh uninstall.sh AndroidManifest.xml build/
-          mkdir -p dist
-          cd build
-          zip -r ../dist/fingerprint-bypass-mutz.zip META-INF module.prop customize.sh uninstall.sh AndroidManifest.xml zygisk
-          cd ..
-          echo "Module build completed"
+          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          cd jni
+          $NDK_HOME/ndk-build -j$(nproc) APP_ABI="armeabi-v7a arm64-v8a x86 x86_64"
 
-      - name: Upload Module Zip
-        uses: actions/upload-artifact@main
-        with:
-          name: fingerprint-bypass-mutz
-          path: dist/fingerprint-bypass-mutz.zip
+      - name: Prepare module distribution
+        run: |
+          # Create module directory structure
+          mkdir -p module_tmp/zygisk
           
-      - name: Upload Native Libraries
+          # Setup main directories
+          mkdir -p module_tmp/zygisk/arm64-v8a
+          mkdir -p module_tmp/zygisk/armeabi-v7a
+          mkdir -p module_tmp/zygisk/x86
+          mkdir -p module_tmp/zygisk/x86_64
+          
+          # Copy built libraries
+          cp -f libs/arm64-v8a/libfingerprint_bypasser.so module_tmp/zygisk/arm64-v8a/
+          cp -f libs/armeabi-v7a/libfingerprint_bypasser.so module_tmp/zygisk/armeabi-v7a/
+          cp -f libs/x86/libfingerprint_bypasser.so module_tmp/zygisk/x86/
+          cp -f libs/x86_64/libfingerprint_bypasser.so module_tmp/zygisk/x86_64/
+          
+          # Copy module files
+          cp -f module.prop module_tmp/
+          cp -f customize.sh module_tmp/
+          cp -f uninstall.sh module_tmp/
+          cp -f README.md module_tmp/
+          
+          # Create ZIP file
+          cd module_tmp
+          zip -r9 ../fingerprint_bypasser_hyperos.zip *
+
+      - name: Upload module ZIP
         uses: actions/upload-artifact@main
         with:
-          name: native-libs
-          path: |
-            zygisk/arm64-v8a.so
-            zygisk/armeabi-v7a.so
-      
-      - name: Create Release
-        id: create_release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          name: fingerprint_bypasser_hyperos
+          path: fingerprint_bypasser_hyperos.zip
 
-      - name: Upload Release Asset
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload debug .so files
+        uses: actions/upload-artifact@main
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/fingerprint-bypass-mutz.zip
-          asset_name: fingerprint-bypass-mutz.zip
-          asset_content_type: application/zip
+          name: so_libraries_debug
+          path: libs/*/libfingerprint_bypasser.so
